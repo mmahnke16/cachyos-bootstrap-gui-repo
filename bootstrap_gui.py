@@ -52,6 +52,7 @@ PKG_GROUPS = {
     'java': ['jdk-openjdk'],
     'docker': ['docker', 'docker-compose'],
     'shell': ['zsh', 'starship', 'zoxide', 'fastfetch'],
+    'dev': ['python-pytest', 'bandit', 'shellcheck'],
 }
 
 AUR_HINTS = ['paru', 'cursor-bin', 'fnm', 'vscodium-bin']
@@ -77,6 +78,108 @@ class AppConfig:
     def __post_init__(self):
         if self.groups is None:
             self.groups = {k: (k in {'base', 'python', 'node', 'shell'}) for k in PKG_GROUPS}
+
+
+def generate_bootstrap_script(cfg: AppConfig) -> str:
+    pacman_pkgs = []
+    for group, enabled in cfg.groups.items():
+        if enabled:
+            pacman_pkgs.extend(PKG_GROUPS[group])
+    if cfg.editor == 'code':
+        pacman_pkgs.append('code')
+    if cfg.extra_pacman:
+        pacman_pkgs.extend(cfg.extra_pacman.split())
+    pacman_pkgs = sorted(dict.fromkeys(pacman_pkgs))
+
+    aur_pkgs = []
+    if cfg.editor == 'vscodium-bin':
+        aur_pkgs.append('vscodium-bin')
+    if cfg.extra_aur:
+        aur_pkgs.extend(cfg.extra_aur.split())
+    aur_pkgs = sorted(dict.fromkeys(aur_pkgs))
+
+    ext_lines = []
+    if cfg.install_continue:
+        ext_lines.append(f'install_extension "{EXTENSIONS["continue"]}"')
+    if cfg.install_cline:
+        ext_lines.append(f'install_extension "{EXTENSIONS["cline"]}"')
+    ext_block = '\n'.join(ext_lines) if ext_lines else 'echo "No editor extensions selected."'
+
+    model_block = ''
+    if cfg.install_ollama and cfg.model != 'skip':
+        model_block = f'ollama pull {shlex.quote(cfg.model)}\n'
+
+    extra_cmds = cfg.extra_commands.strip()
+    if not extra_cmds:
+        extra_cmds = 'echo "No extra post-install commands."'
+
+    return f'''#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_DIR={shlex.quote(str(CONFIG_DIR))}
+LOG_FILE={shlex.quote(str(LOG_PATH))}
+mkdir -p "$CONFIG_DIR"
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+echo "==> Updating system"
+sudo pacman -Syu --noconfirm
+
+have_cmd() {{ command -v "$1" >/dev/null 2>&1; }}
+
+ensure_paru() {{
+  if have_cmd paru; then return; fi
+  echo "==> Installing paru"
+  sudo pacman -S --needed --noconfirm paru
+}}
+
+install_extension() {{
+  local ext="$1"
+  if have_cmd code; then
+    code --install-extension "$ext" || true
+  elif have_cmd codium; then
+    codium --install-extension "$ext" || true
+  else
+    echo "No code/codium binary found; skipping $ext"
+  fi
+}}
+
+echo "==> Installing pacman packages"
+sudo pacman -S --needed --noconfirm {' '.join(shlex.quote(x) for x in pacman_pkgs)}
+
+if {'true' if aur_pkgs else 'false'}; then
+  ensure_paru
+  echo "==> Installing AUR packages"
+  paru -S --needed --noconfirm {' '.join(shlex.quote(x) for x in aur_pkgs) if aur_pkgs else ''}
+fi
+
+{'echo "==> Installing Ollama"\nif ! have_cmd ollama; then\n  curl -fsSL https://ollama.com/install.sh | sh\nfi\nif systemctl list-unit-files | grep -q "^ollama.service"; then\n  sudo systemctl enable --now ollama\nelse\n  systemctl --user enable --now ollama || true\nfi\n' if cfg.install_ollama else 'echo "Skipping Ollama install"\n'}
+
+{'echo "==> Pulling starter model"\n' + model_block if model_block else 'echo "Skipping model pull"\n'}
+
+echo "==> Runtime setup"
+mkdir -p "$HOME/.local/bin" "$HOME/code" "$HOME/projects" "$HOME/bin" "$HOME/tmp"
+if have_cmd rustup; then rustup default stable || true; fi
+if have_cmd docker; then sudo systemctl enable --now docker || true; sudo usermod -aG docker "$USER" || true; fi
+
+echo "==> Installing selected editor extensions"
+{ext_block}
+
+echo "==> Writing shell hints"
+grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+if [ -f "$HOME/.zshrc" ] || have_cmd zsh; then
+  touch "$HOME/.zshrc"
+  grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+  grep -qxF 'eval "$(starship init zsh)"' "$HOME/.zshrc" || echo 'eval "$(starship init zsh)"' >> "$HOME/.zshrc" || true
+  grep -qxF 'eval "$(zoxide init zsh)"' "$HOME/.zshrc" || echo 'eval "$(zoxide init zsh)"' >> "$HOME/.zshrc" || true
+fi
+
+echo "==> Running extra post-install commands"
+{extra_cmds}
+
+echo "==> Done"
+echo "Log: $LOG_FILE"
+echo "If Ollama is installed, endpoint is usually http://localhost:11434"
+'''
 
 
 class BootstrapWindow(Gtk.ApplicationWindow):
@@ -254,109 +357,8 @@ class BootstrapWindow(Gtk.ApplicationWindow):
         )
         return cfg
 
-    def build_script(self, cfg: AppConfig) -> str:
-        pacman_pkgs = []
-        for group, enabled in cfg.groups.items():
-            if enabled:
-                pacman_pkgs.extend(PKG_GROUPS[group])
-        if cfg.editor == 'code':
-            pacman_pkgs.append('code')
-        if cfg.extra_pacman:
-            pacman_pkgs.extend(cfg.extra_pacman.split())
-        pacman_pkgs = sorted(dict.fromkeys(pacman_pkgs))
-
-        aur_pkgs = []
-        if cfg.editor == 'vscodium-bin':
-            aur_pkgs.append('vscodium-bin')
-        if cfg.extra_aur:
-            aur_pkgs.extend(cfg.extra_aur.split())
-        aur_pkgs = sorted(dict.fromkeys(aur_pkgs))
-
-        ext_lines = []
-        if cfg.install_continue:
-            ext_lines.append(f'install_extension "{EXTENSIONS["continue"]}"')
-        if cfg.install_cline:
-            ext_lines.append(f'install_extension "{EXTENSIONS["cline"]}"')
-        ext_block = '\n'.join(ext_lines) if ext_lines else 'echo "No editor extensions selected."'
-
-        model_block = ''
-        if cfg.install_ollama and cfg.model != 'skip':
-            model_block = f'ollama pull {shlex.quote(cfg.model)}\n'
-
-        extra_cmds = cfg.extra_commands.strip()
-        if not extra_cmds:
-            extra_cmds = 'echo "No extra post-install commands."'
-
-        return f'''#!/usr/bin/env bash
-set -euo pipefail
-
-CONFIG_DIR={shlex.quote(str(CONFIG_DIR))}
-LOG_FILE={shlex.quote(str(LOG_PATH))}
-mkdir -p "$CONFIG_DIR"
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-echo "==> Updating system"
-sudo pacman -Syu --noconfirm
-
-have_cmd() {{ command -v "$1" >/dev/null 2>&1; }}
-
-ensure_paru() {{
-  if have_cmd paru; then return; fi
-  echo "==> Installing paru"
-  sudo pacman -S --needed --noconfirm paru
-}}
-
-install_extension() {{
-  local ext="$1"
-  if have_cmd code; then
-    code --install-extension "$ext" || true
-  elif have_cmd codium; then
-    codium --install-extension "$ext" || true
-  else
-    echo "No code/codium binary found; skipping $ext"
-  fi
-}}
-
-echo "==> Installing pacman packages"
-sudo pacman -S --needed --noconfirm {' '.join(shlex.quote(x) for x in pacman_pkgs)}
-
-if {'true' if aur_pkgs else 'false'}; then
-  ensure_paru
-  echo "==> Installing AUR packages"
-  paru -S --needed --noconfirm {' '.join(shlex.quote(x) for x in aur_pkgs) if aur_pkgs else ''}
-fi
-
-{'echo "==> Installing Ollama"\nif ! have_cmd ollama; then\n  curl -fsSL https://ollama.com/install.sh | sh\nfi\nif systemctl list-unit-files | grep -q "^ollama.service"; then\n  sudo systemctl enable --now ollama\nelse\n  systemctl --user enable --now ollama || true\nfi\n' if cfg.install_ollama else 'echo "Skipping Ollama install"\n'}
-
-{'echo "==> Pulling starter model"\n' + model_block if model_block else 'echo "Skipping model pull"\n'}
-
-echo "==> Runtime setup"
-mkdir -p "$HOME/.local/bin" "$HOME/code" "$HOME/projects" "$HOME/bin" "$HOME/tmp"
-if have_cmd rustup; then rustup default stable || true; fi
-if have_cmd docker; then sudo systemctl enable --now docker || true; sudo usermod -aG docker "$USER" || true; fi
-
-echo "==> Installing selected editor extensions"
-{ext_block}
-
-echo "==> Writing shell hints"
-grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.bashrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-if [ -f "$HOME/.zshrc" ] || have_cmd zsh; then
-  touch "$HOME/.zshrc"
-  grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zshrc" || echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
-  grep -qxF 'eval "$(starship init zsh)"' "$HOME/.zshrc" || echo 'eval "$(starship init zsh)"' >> "$HOME/.zshrc" || true
-  grep -qxF 'eval "$(zoxide init zsh)"' "$HOME/.zshrc" || echo 'eval "$(zoxide init zsh)"' >> "$HOME/.zshrc" || true
-fi
-
-echo "==> Running extra post-install commands"
-{extra_cmds}
-
-echo "==> Done"
-echo "Log: $LOG_FILE"
-echo "If Ollama is installed, endpoint is usually http://localhost:11434"
-'''
-
     def refresh_preview(self):
-        script = self.build_script(self.gather())
+        script = generate_bootstrap_script(self.gather())
         self.set_textview(self.script_view, script)
 
     def set_textview(self, view: Gtk.TextView, text: str):
@@ -371,7 +373,7 @@ echo "If Ollama is installed, endpoint is usually http://localhost:11434"
     def on_generate(self, *_args):
         cfg = self.gather()
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        script = self.build_script(cfg)
+        script = generate_bootstrap_script(cfg)
         SCRIPT_PATH.write_text(script, encoding='utf-8')
         os.chmod(SCRIPT_PATH, 0o755)
         CONFIG_PATH.write_text(json.dumps(cfg.__dict__, indent=2), encoding='utf-8')
