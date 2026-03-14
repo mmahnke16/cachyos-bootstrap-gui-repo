@@ -60,6 +60,26 @@ The application does not make changes immediately. Instead, it:
 *   **Ollama**: If installed, the default endpoint is http://localhost:11434.
 *   **Terminals**: If the app fails to launch the terminal, check the logs or run the generated script manually from the path above.
 
+## 🧪 Development & Testing
+
+To run the test suite and security checks:
+
+1.  **Install development dependencies**:
+    ```bash
+    pip install -r requirements-dev.txt
+    ```
+
+2.  **Run tests**:
+    ```bash
+    pytest
+    ```
+
+3.  **Run security checks**:
+    ```bash
+    bandit -r bootstrap_gui.py
+    shellcheck install-deps.sh launch.sh
+    ```
+
 ## 📄 License
 
 [MIT](LICENSE)
