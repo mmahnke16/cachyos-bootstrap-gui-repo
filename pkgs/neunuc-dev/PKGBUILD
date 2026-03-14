@@ -1,0 +1,28 @@
+# Maintainer: Mystical Mahnke <mystical@mystical.codes>
+pkgname=neunuc-dev
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="NeuNuc Developer tools meta-package"
+arch=('any')
+url="https://github.com/mmahnke16/cachyos-bootstrap-gui-repo"
+license=('MIT')
+depends=(
+  'code'
+  'git'
+  'base-devel'
+  'python'
+  'python-pip'
+  'nodejs'
+  'npm'
+  'rustup'
+  'go'
+  'fzf'
+  'ripgrep'
+  'fd'
+  'jq'
+)
+
+package() {
+  # Meta-package - no files to install
+  return 0
+}
